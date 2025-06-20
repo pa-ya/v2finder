@@ -2,6 +2,8 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import net from 'net';
+import fs from 'fs';
+import path from 'path';
 
 class V2rayFinder {
   constructor() {
@@ -33,8 +35,65 @@ class V2rayFinder {
     ];
     
     this.workingConfigs = [];
-    this.timeout = 5000; // Reduced timeout for faster testing
-    this.maxConcurrent = 10; // Test multiple configs simultaneously
+    this.potentialConfigs = [];
+    this.timeout = 5000;
+    this.maxConcurrent = 10;
+    
+    // File paths
+    this.workingConfigsFile = 'working_configs.txt';
+    this.potentialConfigsFile = 'potential_configs.txt';
+    this.allConfigsFile = 'all_configs.txt';
+  }
+
+  // Create output directory if it doesn't exist
+  ensureOutputDirectory() {
+    const outputDir = 'output';
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    
+    // Update file paths to include output directory
+    this.workingConfigsFile = path.join(outputDir, 'working_configs.txt');
+    this.potentialConfigsFile = path.join(outputDir, 'potential_configs.txt');
+    this.allConfigsFile = path.join(outputDir, 'all_configs.txt');
+  }
+
+  // Write configs to file with timestamp
+  writeConfigsToFile(configs, filename, title) {
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const header = `# ${title}\n# Generated on: ${new Date().toLocaleString()}\n# Total configs: ${configs.length}\n\n`;
+      
+      let content = header;
+      
+      if (configs.length > 0) {
+        configs.forEach((config, index) => {
+          content += `${index + 1}. ${config}\n`;
+        });
+      } else {
+        content += '# No configurations found\n';
+      }
+      
+      content += `\n# End of file - ${timestamp}\n`;
+      
+      fs.writeFileSync(filename, content, 'utf8');
+      console.log(`📁 Saved ${configs.length} configs to: ${filename}`);
+      
+      return true;
+    } catch (error) {
+      console.error(`❌ Error writing to ${filename}:`, error.message);
+      return false;
+    }
+  }
+
+  // Append config to file (for real-time updates)
+  appendConfigToFile(config, filename, label) {
+    try {
+      const line = `${label}: ${config}\n`;
+      fs.appendFileSync(filename, line, 'utf8');
+    } catch (error) {
+      console.error(`❌ Error appending to ${filename}:`, error.message);
+    }
   }
 
   // Decode base64 configurations
@@ -141,7 +200,10 @@ class V2rayFinder {
       
       if (tcpResult) {
         console.log(`✅ TCP OK: ${config.ps}`);
-        return true;
+        this.workingConfigs.push(config.original);
+        // Append to working configs file immediately
+        this.appendConfigToFile(config.original, this.workingConfigsFile, '✅ WORKING');
+        return 'working';
       }
       
       // If TCP fails, try HTTP test (some servers might respond differently)
@@ -156,15 +218,21 @@ class V2rayFinder {
         
         clearTimeout(timeoutId);
         console.log(`✅ HTTP OK: ${config.ps}`);
-        return true;
+        this.workingConfigs.push(config.original);
+        // Append to working configs file immediately
+        this.appendConfigToFile(config.original, this.workingConfigsFile, '✅ WORKING');
+        return 'working';
       } catch (httpError) {
         // Even if HTTP fails, the server might still be a valid proxy
         // Some V2ray servers don't respond to HTTP requests but work as proxies
         console.log(`⚠️  Potential: ${config.ps} (Port open but no HTTP response)`);
-        return true; // Consider it working for V2ray purposes
+        this.potentialConfigs.push(config.original);
+        // Append to potential configs file immediately
+        this.appendConfigToFile(config.original, this.potentialConfigsFile, '⚠️ POTENTIAL');
+        return 'potential';
       }
     } catch (error) {
-      return false;
+      return 'failed';
     }
   }
 
@@ -179,7 +247,7 @@ class V2rayFinder {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         },
         validateStatus: function (status) {
-          return status < 500; // Accept any status code less than 500
+          return status < 500;
         }
       });
       
@@ -218,8 +286,8 @@ class V2rayFinder {
         }
         
         if (config) {
-          const isWorking = await this.testConnection(config);
-          return { config, isWorking, original: configUrl };
+          const testResult = await this.testConnection(config);
+          return { config, testResult, original: configUrl };
         }
         return null;
       });
@@ -237,11 +305,36 @@ class V2rayFinder {
     return results;
   }
 
+  // Initialize output files
+  initializeOutputFiles() {
+    try {
+      const timestamp = new Date().toLocaleString();
+      
+      // Initialize working configs file
+      const workingHeader = `# V2ray Working Configurations\n# Started: ${timestamp}\n# This file is updated in real-time as working configs are found\n\n`;
+      fs.writeFileSync(this.workingConfigsFile, workingHeader, 'utf8');
+      
+      // Initialize potential configs file
+      const potentialHeader = `# V2ray Potential Configurations\n# Started: ${timestamp}\n# These configs might work but failed initial tests\n\n`;
+      fs.writeFileSync(this.potentialConfigsFile, potentialHeader, 'utf8');
+      
+      console.log(`📁 Output files initialized:`);
+      console.log(`   Working configs: ${this.workingConfigsFile}`);
+      console.log(`   Potential configs: ${this.potentialConfigsFile}\n`);
+    } catch (error) {
+      console.error('❌ Error initializing output files:', error.message);
+    }
+  }
+
   // Main function to find and test servers
   async findAndTestServers() {
-    console.log('🔍 V2ray Connection Finder - Enhanced Version');
-    console.log('='.repeat(50));
+    console.log('🔍 V2ray Connection Finder - Enhanced Version with File Output');
+    console.log('='.repeat(60));
     console.log('🌍 Searching for V2ray servers...\n');
+    
+    // Ensure output directory exists and initialize files
+    this.ensureOutputDirectory();
+    this.initializeOutputFiles();
     
     const allConfigs = [];
     
@@ -271,48 +364,77 @@ class V2rayFinder {
     const uniqueConfigs = [...new Set(allConfigs)];
     console.log(`📋 Unique configurations to test: ${uniqueConfigs.length}\n`);
     
+    // Save all configs to file
+    this.writeConfigsToFile(uniqueConfigs, this.allConfigsFile, 'All Found V2ray Configurations (Not Tested)');
+    
     console.log('🧪 Testing connections...\n');
     
     // Process configs in batches
     const results = await this.processConfigsBatch(uniqueConfigs);
     
-    // Filter working configs
-    const workingConfigs = results
-      .filter(r => r.isWorking)
-      .map(r => r.original);
-    
-    console.log('\n' + '='.repeat(50));
+    console.log('\n' + '='.repeat(60));
     console.log('🎉 RESULTS');
-    console.log('='.repeat(50));
+    console.log('='.repeat(60));
     
-    if (workingConfigs.length > 0) {
-      console.log(`✅ Found ${workingConfigs.length} working configurations:\n`);
+    // Final file updates with complete lists
+    this.writeConfigsToFile(this.workingConfigs, this.workingConfigsFile, 'Working V2ray Configurations');
+    this.writeConfigsToFile(this.potentialConfigs, this.potentialConfigsFile, 'Potential V2ray Configurations');
+    
+    console.log(`\n📊 SUMMARY:`);
+    console.log(`✅ Working configurations: ${this.workingConfigs.length}`);
+    console.log(`⚠️  Potential configurations: ${this.potentialConfigs.length}`);
+    console.log(`📁 Total configurations found: ${uniqueConfigs.length}\n`);
+    
+    if (this.workingConfigs.length > 0) {
+      console.log(`✅ Found ${this.workingConfigs.length} working configurations!`);
+      console.log(`📁 Saved to: ${this.workingConfigsFile}\n`);
       
-      workingConfigs.forEach((config, index) => {
-        console.log(`${index + 1}. ${config}\n`);
+      console.log('🔥 TOP 5 WORKING CONFIGS:');
+      this.workingConfigs.slice(0, 5).forEach((config, index) => {
+        console.log(`${index + 1}. ${config}`);
       });
-      
-      console.log('📋 INSTRUCTIONS:');
-      console.log('1. Copy any of the above links');
-      console.log('2. Paste them into your V2ray client (v2rayN, v2rayNG, etc.)');
-      console.log('3. Try multiple configs as performance may vary');
-      console.log('4. Run this tool again periodically for fresh servers\n');
-      
-    } else {
-      console.log('❌ No working configurations found.');
+      console.log('');
+    }
+    
+    if (this.potentialConfigs.length > 0) {
+      console.log(`⚠️  Found ${this.potentialConfigs.length} potential configurations!`);
+      console.log(`📁 Saved to: ${this.potentialConfigsFile}`);
+      console.log('💡 These might work in your V2ray client even if they failed the test\n');
+    }
+    
+    if (this.workingConfigs.length === 0 && this.potentialConfigs.length === 0) {
+      console.log('❌ No working or potential configurations found.');
       console.log('\n💡 TROUBLESHOOTING TIPS:');
       console.log('• Network restrictions might be blocking connections');
       console.log('• Try running the script multiple times');
       console.log('• Server availability changes frequently');
-      console.log('• Some configs might work better at different times');
+      console.log('• Check the all_configs.txt file for raw configurations');
     }
     
-    return workingConfigs;
+    console.log('📋 FILES CREATED:');
+    console.log(`• ${this.workingConfigsFile} - Ready to use configs`);
+    console.log(`• ${this.potentialConfigsFile} - Configs that might work`);
+    console.log(`• ${this.allConfigsFile} - All found configs (raw)\n`);
+    
+    console.log('📋 INSTRUCTIONS:');
+    console.log('1. Open the working_configs.txt file');
+    console.log('2. Copy any configuration link');
+    console.log('3. Paste into your V2ray client (v2rayN, v2rayNG, etc.)');
+    console.log('4. If working configs don\'t work, try potential configs');
+    console.log('5. Run this tool again periodically for fresh servers\n');
+    
+    return {
+      working: this.workingConfigs,
+      potential: this.potentialConfigs,
+      all: uniqueConfigs
+    };
   }
 
   // Show all found configs (even if not tested as working)
   async showAllConfigs() {
     console.log('📋 Showing ALL found configurations (not tested):\n');
+    
+    this.ensureOutputDirectory();
     
     const allConfigs = [];
     
@@ -324,11 +446,21 @@ class V2rayFinder {
     
     const uniqueConfigs = [...new Set(allConfigs)];
     
+    // Save to file
+    this.writeConfigsToFile(uniqueConfigs, this.allConfigsFile, 'All Found V2ray Configurations (Not Tested)');
+    
     if (uniqueConfigs.length > 0) {
-      console.log(`Found ${uniqueConfigs.length} total configurations:\n`);
-      uniqueConfigs.forEach((config, index) => {
+      console.log(`Found ${uniqueConfigs.length} total configurations`);
+      console.log(`📁 Saved to: ${this.allConfigsFile}\n`);
+      
+      console.log('🔥 FIRST 10 CONFIGS:');
+      uniqueConfigs.slice(0, 10).forEach((config, index) => {
         console.log(`${index + 1}. ${config}`);
       });
+      
+      if (uniqueConfigs.length > 10) {
+        console.log(`\n... and ${uniqueConfigs.length - 10} more in the file`);
+      }
     } else {
       console.log('No configurations found.');
     }
